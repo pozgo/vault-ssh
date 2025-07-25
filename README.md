@@ -57,11 +57,11 @@ A secure shell extension for `.bashrc` and `.zshrc` that enables SSH connections
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/ssh_vault.git
-cd ssh_vault
+git clone https://github.com/pozgo/vault-ssh.git
+cd vault-ssh
 
 # Or download directly
-wget https://raw.githubusercontent.com/yourusername/ssh_vault/main/ssh_vault.sh
+wget https://raw.githubusercontent.com/pozgo/vault-ssh/main/ssh_vault.sh
 ```
 
 ### 2. Add to Shell Profile
@@ -442,8 +442,8 @@ vault_check
 sudo apt update && sudo apt install sshpass jq
 
 # 2. Download and setup SSH Vault
-git clone https://github.com/yourusername/ssh_vault.git
-cd ssh_vault
+git clone https://github.com/pozgo/vault-ssh.git
+cd vault-ssh
 echo "source $(pwd)/ssh_vault.sh" >> ~/.bashrc
 source ~/.bashrc
 
@@ -556,8 +556,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## Support
 
 - 📖 **Documentation**: Check this README and inline function help
-- 🐛 **Bug Reports**: [GitHub Issues](https://github.com/yourusername/ssh_vault/issues)
-- 💡 **Feature Requests**: [GitHub Discussions](https://github.com/yourusername/ssh_vault/discussions)
+- 🐛 **Bug Reports**: [GitHub Issues](https://github.com/pozgo/vault-ssh/issues)
+- 💡 **Feature Requests**: [GitHub Discussions](https://github.com/pozgo/vault-ssh/discussions)
 - 🤝 **Community**: Join our discussions for help and tips
 
 ## Changelog
