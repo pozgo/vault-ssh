@@ -9,18 +9,22 @@ export VAULT_ADDR="https://vault.example.com:8200"
 # Or use service token: vault write auth/token/create policies=ssh-secrets
 export VAULT_TOKEN="hvs.XXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
 
-# Vault mount path for secrets engine (default: secret)
+# Vault mount path for secrets engine (default: ssh-auth)
 # This is the path where your KV secrets engine is mounted
-export VAULT_MOUNT_PATH="secret"
+export VAULT_MOUNT_PATH="ssh-auth"
 
-# Base path for SSH secrets within the mount (default: ssh)
-# SSH passwords will be stored at: $VAULT_MOUNT_PATH/$VAULT_SECRET_PATH/hostname
-export VAULT_SECRET_PATH="ssh"
+# Base path for SSH secrets within the mount (default: hosts)
+# SSH credentials will be stored at: $VAULT_MOUNT_PATH/$VAULT_SECRET_PATH/hostname
+export VAULT_SECRET_PATH="hosts"
+
+# Temporary directory for SSH keys (default: /tmp/ssh_vault_keys)
+# SSH keys from vault are temporarily stored here during authentication
+export SSH_TEMP_KEY_DIR="/tmp/ssh_vault_keys"
 
 # Example secret paths with this configuration:
-# - Server "web01" password: secret/ssh/web01
-# - Server "db.example.com" password: secret/ssh/db.example.com
-# - Custom path can override: vault_ssh user@server custom/secret/path
+# - Server "web01" credentials: ssh-auth/hosts/web01
+# - Server "db.example.com" credentials: ssh-auth/hosts/db.example.com
+# - Custom path can override: vault_ssh user@server ssh-auth/custom/path
 
 # Setup Instructions:
 # 1. Copy this file: cp example_config ~/.ssh_vault_config
@@ -29,6 +33,19 @@ export VAULT_SECRET_PATH="ssh"
 # 4. Source ssh_vault.sh in your shell profile
 # 5. Test connection: vault_test_connection
 
-# Example vault commands to store passwords:
-# vault kv put secret/ssh/web01 password="mypassword123"
-# vault kv put secret/ssh/db.example.com password="dbpassword456"
+# Example vault commands to store credentials:
+
+# Password-only authentication:
+# vault kv put ssh-auth/hosts/web01 auth_type="password" username="admin" password="mypassword123"
+
+# SSH key authentication:
+# vault kv put ssh-auth/hosts/web01 auth_type="key" username="admin" key_ref="shared/admin-key"
+# vault kv put ssh-auth/keys/shared/admin-key private_key="-----BEGIN OPENSSH PRIVATE KEY-----..."
+
+# Both methods (SSH key tried first, password fallback):
+# vault kv put ssh-auth/hosts/web01 auth_type="both" username="admin" password="backup_pass" key_ref="shared/admin-key"
+
+# Shared SSH keys for multiple servers:
+# vault kv put ssh-auth/keys/shared/deploy-key private_key="-----BEGIN OPENSSH PRIVATE KEY-----..."
+# vault kv put ssh-auth/hosts/server1 auth_type="key" username="deploy" key_ref="shared/deploy-key"
+# vault kv put ssh-auth/hosts/server2 auth_type="key" username="deploy" key_ref="shared/deploy-key"
