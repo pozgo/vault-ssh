@@ -4,13 +4,14 @@
 [![Shell](https://img.shields.io/badge/Shell-bash%2Fzsh-blue)](https://www.gnu.org/software/bash/)
 [![HashiCorp Vault](https://img.shields.io/badge/HashiCorp-Vault-orange)](https://www.vaultproject.io/)
 
-A secure shell extension for `.bashrc` and `.zshrc` that enables SSH connections using passwords stored in HashiCorp Vault. Never store SSH passwords in plain text again!
+A secure shell extension for `.bashrc` and `.zshrc` that enables SSH connections using passwords and SSH keys stored in HashiCorp Vault. Never store SSH credentials in plain text again!
 
 ## Features
 
-- 🔐 **Secure Password Storage**: Retrieve SSH passwords from HashiCorp Vault
-- 🛡️ **Security First**: Passwords never stored in shell history or temporary files
-- 🔄 **Fallback Support**: Gracefully falls back to standard SSH if Vault is unavailable
+- 🔐 **Secure Credential Storage**: Retrieve SSH passwords and keys from HashiCorp Vault
+- 🔑 **SSH Key Support**: Use SSH keys stored in Vault with automatic temporary file management
+- 🛡️ **Security First**: Credentials never stored in shell history or temporary files
+- 🔄 **Smart Authentication**: SSH key authentication with password fallback
 - 🔍 **Comprehensive Diagnostics**: Built-in troubleshooting with `vault_check()`
 - ⚡ **Easy Integration**: Simple sourcing into existing shell profiles
 - 🎯 **Flexible Configuration**: Support for multiple Vault paths and configurations
@@ -90,10 +91,13 @@ vault_check
 
 ```bash
 # Store password for a server
-vault kv put secret/ssh/myserver password="your_secure_password"
+vault kv put ssh-auth/hosts/myserver auth_type="password" username="admin" password="your_secure_password"
 
-# Store with custom path
-vault kv put secret/production/database password="db_password"
+# Store SSH key authentication
+vault kv put ssh-auth/hosts/myserver auth_type="key" username="admin" key_ref="shared/admin-key"
+
+# Store both password and SSH key (SSH key tried first)
+vault kv put ssh-auth/hosts/myserver auth_type="both" username="admin" password="backup_password" key_ref="shared/admin-key"
 ```
 
 ### 5. Connect to Servers
@@ -103,7 +107,7 @@ vault kv put secret/production/database password="db_password"
 vault_ssh user@myserver
 
 # With custom secret path
-vault_ssh user@database secret/production/database
+vault_ssh user@database ssh-auth/hosts/database
 ```
 
 ## Configuration
@@ -119,8 +123,8 @@ vault_config_init
 This will prompt for:
 - **Vault Address**: Your Vault server URL (e.g., `https://vault.company.com:8200`)
 - **Authentication Token**: Your Vault token with appropriate permissions
-- **Mount Path**: Secrets engine mount point (default: `secret`)
-- **Secret Path**: Base path for SSH secrets (default: `ssh`)
+- **Mount Path**: Secrets engine mount point (default: `ssh-auth`)
+- **Secret Path**: Base path for SSH secrets (default: `hosts`)
 
 ### Manual Configuration
 
@@ -129,8 +133,8 @@ Set individual configuration parameters:
 ```bash
 vault_config_set VAULT_ADDR "https://vault.example.com:8200"
 vault_config_set VAULT_TOKEN "hvs.your_token_here"
-vault_config_set VAULT_MOUNT_PATH "secret"
-vault_config_set VAULT_SECRET_PATH "ssh"
+vault_config_set VAULT_MOUNT_PATH "ssh-auth"
+vault_config_set VAULT_SECRET_PATH "hosts"
 ```
 
 ### Configuration File
@@ -141,8 +145,9 @@ Configuration is stored in `~/.ssh_vault_config`:
 # Example configuration file content
 VAULT_ADDR=https://vault.example.com:8200
 VAULT_TOKEN=hvs.your_token_here
-VAULT_MOUNT_PATH=secret
-VAULT_SECRET_PATH=ssh
+VAULT_MOUNT_PATH=ssh-auth
+VAULT_SECRET_PATH=hosts
+SSH_TEMP_KEY_DIR=/tmp/ssh_vault_keys
 ```
 
 ## Functions Reference
@@ -162,15 +167,16 @@ vault_ssh [user@]hostname [vault_secret_path] [ssh_options]
 vault_ssh user@server.example.com
 
 # With custom secret path
-vault_ssh admin@database secret/prod/db
+vault_ssh admin@database ssh-auth/hosts/database
 
 # With SSH options
 vault_ssh user@server -p 2222 -o StrictHostKeyChecking=no
 ```
 
 **Behavior:**
-- Retrieves password from Vault using the specified or default path
-- Establishes SSH connection with automatic password authentication
+- Retrieves authentication details from Vault using the specified or default path
+- Attempts SSH key authentication first, falls back to password if needed
+- Establishes SSH connection with automatic credential handling
 - Falls back to standard SSH if Vault operations fail
 - Supports all standard SSH options and flags
 
@@ -201,8 +207,9 @@ vault_config_set VARIABLE value
 ```bash
 vault_config_set VAULT_ADDR "https://new-vault.example.com:8200"
 vault_config_set VAULT_TOKEN "hvs.new_token"
-vault_config_set VAULT_MOUNT_PATH "kv"
-vault_config_set VAULT_SECRET_PATH "servers"
+vault_config_set VAULT_MOUNT_PATH "ssh-auth"
+vault_config_set VAULT_SECRET_PATH "hosts"
+vault_config_set SSH_TEMP_KEY_DIR "/tmp/ssh_vault_keys"
 ```
 
 ### vault_get_password()
@@ -217,10 +224,10 @@ vault_get_password secret_path
 **Examples:**
 ```bash
 # Retrieve password and use in variable
-password=$(vault_get_password secret/ssh/myserver)
+password=$(vault_get_password ssh-auth/hosts/myserver)
 
 # Direct usage in commands
-echo $(vault_get_password secret/database/prod)
+echo $(vault_get_password ssh-auth/hosts/database)
 ```
 
 ### vault_check()
@@ -254,27 +261,27 @@ Returns clear pass/fail status with specific error messages.
 
 ### Default Path Structure
 
-By default, SSH passwords are stored using this path pattern:
+By default, SSH credentials are stored using this path pattern:
 ```
 {VAULT_MOUNT_PATH}/{VAULT_SECRET_PATH}/{hostname}
 ```
 
 **Example:**
-- Mount path: `secret`
-- Secret path: `ssh`
+- Mount path: `ssh-auth`
+- Secret path: `hosts`
 - Hostname: `web01.example.com`
-- Full path: `secret/ssh/web01.example.com`
+- Full path: `ssh-auth/hosts/web01.example.com`
 
 ### Custom Path Structure
 
 You can override the default path for specific connections:
 
 ```bash
-# Store password in custom location
-vault kv put secret/production/web password="prod_password"
+# Store credentials in custom location
+vault kv put ssh-auth/production/web auth_type="both" username="admin" password="prod_password" key_ref="shared/prod-key"
 
 # Use custom path when connecting
-vault_ssh user@web01 secret/production/web
+vault_ssh admin@web01 ssh-auth/production/web
 ```
 
 ### Environment Variables
@@ -284,8 +291,9 @@ All configuration can be overridden with environment variables:
 ```bash
 export VAULT_ADDR="https://vault.example.com:8200"
 export VAULT_TOKEN="hvs.your_token"
-export VAULT_MOUNT_PATH="kv"
-export VAULT_SECRET_PATH="servers"
+export VAULT_MOUNT_PATH="ssh-auth"
+export VAULT_SECRET_PATH="hosts"
+export SSH_TEMP_KEY_DIR="/tmp/ssh_vault_keys"
 export SSH_VAULT_CONFIG_FILE="~/.my_vault_config"
 ```
 
@@ -320,7 +328,7 @@ vault auth -method=userpass username=yourusername
 **Permission Denied:**
 ```bash
 # Check token capabilities
-vault token capabilities secret/ssh/myserver
+vault token capabilities ssh-auth/hosts/myserver
 
 # Verify policy allows read access
 vault policy read your-policy-name
@@ -355,31 +363,32 @@ sudo update-ca-certificates
 **Secret Not Found:**
 ```bash
 # List available secrets
-vault kv list secret/ssh/
+vault kv list ssh-auth/hosts/
 
 # Create missing secret
-vault kv put secret/ssh/myserver password="your_password"
+vault kv put ssh-auth/hosts/myserver auth_type="password" username="admin" password="your_password"
 
 # Check secret exists
-vault kv get secret/ssh/myserver
+vault kv get ssh-auth/hosts/myserver
 ```
 
 **Wrong Secret Engine Version:**
 ```bash
 # Check if using KV v2 (data/ prefix needed)
-vault kv get -mount=secret ssh/myserver
+vault kv get -mount=ssh-auth hosts/myserver
 
-# Or adjust mount path in configuration
-vault_config_set VAULT_MOUNT_PATH "secret/data"
+# Or adjust mount path in configuration  
+vault_config_set VAULT_MOUNT_PATH "ssh-auth"
 ```
 
 #### 🔧 SSH Issues
 
 **Still Prompts for Password:**
-1. Install sshpass: `sudo apt install sshpass`
-2. Verify Vault connectivity: `vault_check`
-3. Test password retrieval: `vault_get_password secret/ssh/hostname`
-4. Check SSH key authentication isn't interfering
+1. Check authentication method: `vault kv get ssh-auth/hosts/hostname`
+2. Install sshpass: `sudo apt install sshpass`
+3. Verify Vault connectivity: `vault_check`
+4. Test credential retrieval: `vault_get_password ssh-auth/hosts/hostname`
+5. Verify SSH key authentication is properly configured
 
 **Connection Timeouts:**
 ```bash
@@ -452,16 +461,16 @@ vault_config_init
 # Follow prompts to enter:
 # - Vault Address: https://vault.company.com:8200
 # - Token: hvs.your_vault_token
-# - Mount Path: secret
-# - Secret Path: ssh
+# - Mount Path: ssh-auth
+# - Secret Path: hosts
 
 # 4. Verify configuration
 vault_check
 
-# 5. Store some passwords
-vault kv put secret/ssh/web01.company.com password="web_password"
-vault kv put secret/ssh/db01.company.com password="db_password"
-vault kv put secret/ssh/10.0.1.100 password="server_password"
+# 5. Store some credentials
+vault kv put ssh-auth/hosts/web01.company.com auth_type="both" username="admin" password="web_password" key_ref="shared/admin-key"
+vault kv put ssh-auth/hosts/db01.company.com auth_type="key" username="dbadmin" key_ref="shared/db-key"
+vault kv put ssh-auth/hosts/10.0.1.100 auth_type="password" username="root" password="server_password"
 
 # 6. Test connections
 vault_ssh admin@web01.company.com
@@ -473,16 +482,16 @@ vault_ssh user@10.0.1.100
 
 ```bash
 # Using different Vault paths for different environments
-vault kv put secret/ssh/production/web01 password="prod_pass"
-vault kv put secret/ssh/staging/web01 password="stage_pass"
+vault kv put ssh-auth/production/web01 auth_type="key" username="admin" key_ref="shared/prod-key"
+vault kv put ssh-auth/staging/web01 auth_type="both" username="admin" password="stage_pass" key_ref="shared/stage-key"
 
 # Connect to different environments
-vault_ssh admin@web01.prod secret/ssh/production/web01
-vault_ssh admin@web01.stage secret/ssh/staging/web01
+vault_ssh admin@web01.prod ssh-auth/production/web01
+vault_ssh admin@web01.stage ssh-auth/staging/web01
 
 # Batch operations
 for host in web01 web02 web03; do
-  vault kv put secret/ssh/$host password="$(openssl rand -base64 32)"
+  vault kv put ssh-auth/hosts/$host auth_type="password" username="admin" password="$(openssl rand -base64 32)"
 done
 
 # Using with SSH config aliases
@@ -492,7 +501,7 @@ done
 #   User admin
 #   Port 2222
 
-vault_ssh prod-web secret/ssh/production/web01
+vault_ssh prod-web ssh-auth/production/web01
 ```
 
 ### Integration Examples
@@ -500,7 +509,7 @@ vault_ssh prod-web secret/ssh/production/web01
 **With Ansible:**
 ```bash
 # Use vault_get_password in Ansible inventory
-ansible_ssh_pass=$(vault_get_password secret/ssh/myserver) ansible-playbook playbook.yml
+ansible_ssh_pass=$(vault_get_password ssh-auth/hosts/myserver) ansible-playbook playbook.yml
 ```
 
 **With Scripts:**

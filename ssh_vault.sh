@@ -7,6 +7,9 @@
 # Default configuration file location
 SSH_VAULT_CONFIG_FILE="${SSH_VAULT_CONFIG_FILE:-$HOME/.ssh_vault_config}"
 
+# Default temporary key directory
+SSH_TEMP_KEY_DIR="${SSH_TEMP_KEY_DIR:-/tmp/ssh_vault_keys}"
+
 # Load configuration from file
 vault_config_load() {
     if [[ -f "$SSH_VAULT_CONFIG_FILE" ]]; then
@@ -20,8 +23,9 @@ vault_config_save() {
 # SSH Vault Configuration
 export VAULT_ADDR="$VAULT_ADDR"
 export VAULT_TOKEN="$VAULT_TOKEN"
-export VAULT_MOUNT_PATH="${VAULT_MOUNT_PATH:-secret}"
-export VAULT_SECRET_PATH="${VAULT_SECRET_PATH:-ssh}"
+export VAULT_MOUNT_PATH="${VAULT_MOUNT_PATH:-ssh-passwords}"
+export VAULT_SECRET_PATH="${VAULT_SECRET_PATH:-hosts}"
+export SSH_TEMP_KEY_DIR="${SSH_TEMP_KEY_DIR:-/tmp/ssh_vault_keys}"
 EOF
     chmod 600 "$SSH_VAULT_CONFIG_FILE"
 }
@@ -33,7 +37,7 @@ vault_config_set() {
     
     if [[ -z "$key" || -z "$value" ]]; then
         echo "📖 Usage: vault_config_set KEY VALUE"
-        echo "   Valid keys: VAULT_ADDR, VAULT_TOKEN, VAULT_MOUNT_PATH, VAULT_SECRET_PATH"
+        echo "   Valid keys: VAULT_ADDR, VAULT_TOKEN, VAULT_MOUNT_PATH, VAULT_SECRET_PATH, SSH_TEMP_KEY_DIR"
         return 1
     fi
     
@@ -58,9 +62,13 @@ vault_config_set() {
             export VAULT_SECRET_PATH="$value"
             echo "📂 Updated secret path: $value"
             ;;
+        SSH_TEMP_KEY_DIR)
+            export SSH_TEMP_KEY_DIR="$value"
+            echo "🗂️  Updated temp key directory: $value"
+            ;;
         *)
             echo "❌ Unknown configuration key: $key"
-            echo "   Valid keys: VAULT_ADDR, VAULT_TOKEN, VAULT_MOUNT_PATH, VAULT_SECRET_PATH"
+            echo "   Valid keys: VAULT_ADDR, VAULT_TOKEN, VAULT_MOUNT_PATH, VAULT_SECRET_PATH, SSH_TEMP_KEY_DIR"
             return 1
             ;;
     esac
@@ -327,7 +335,141 @@ vault_get_password() {
     fi
 }
 
-# Main SSH function using vault passwords
+# Get secret with auth type detection from vault
+vault_get_secret() {
+    local secret_path="$1"
+    
+    if [[ -z "$secret_path" ]]; then
+        echo "Error: Secret path required" >&2
+        return 1
+    fi
+    
+    # Ensure configuration is loaded
+    vault_config_load
+    
+    if [[ -z "$VAULT_ADDR" || -z "$VAULT_TOKEN" ]]; then
+        echo "Error: Vault not configured. Run vault_config_init first." >&2
+        return 1
+    fi
+    
+    # Check token validity
+    if ! vault token lookup >/dev/null 2>&1; then
+        echo "Error: Vault token is invalid or expired" >&2
+        return 1
+    fi
+    
+    # Retrieve secret from vault
+    local secret_json error_msg
+    secret_json=$(vault kv get -format=json "$secret_path" 2>&1)
+    
+    if [[ $? -eq 0 && -n "$secret_json" ]]; then
+        # Extract data from JSON
+        local auth_type username password key_ref
+        auth_type=$(echo "$secret_json" | jq -r '.data.data.auth_type // "password"' 2>/dev/null)
+        username=$(echo "$secret_json" | jq -r '.data.data.username // "root"' 2>/dev/null)
+        password=$(echo "$secret_json" | jq -r '.data.data.password // empty' 2>/dev/null)
+        key_ref=$(echo "$secret_json" | jq -r '.data.data.key_ref // empty' 2>/dev/null)
+        
+        # Return structured data
+        echo "{\"auth_type\":\"$auth_type\",\"username\":\"$username\",\"password\":\"$password\",\"key_ref\":\"$key_ref\"}"
+        return 0
+    else
+        echo "❌ Could not retrieve secret from vault path: $secret_path" >&2
+        
+        # Check for common error patterns
+        if [[ "$secret_json" == *"permission denied"* || "$secret_json" == *"invalid token"* ]]; then
+            echo "   🔑 Token may have expired or lacks permissions. Try:" >&2
+            echo "   1️⃣  Renew token: vault token renew" >&2
+            echo "   2️⃣  Re-authenticate: vault auth" >&2
+            echo "   3️⃣  Reconfigure: vault_config_init" >&2
+        elif [[ "$secret_json" == *"no secret exists"* || "$secret_json" == *"no value found"* ]]; then
+            echo "   📝 Secret not found. Create it with:" >&2
+            echo "   💡 vault kv put $secret_path auth_type='password' username='user' password='pass'" >&2
+        else
+            echo "   ⚠️  Vault error: $secret_json" >&2
+        fi
+        
+        return 1
+    fi
+}
+
+# Get SSH key from vault and create temporary key file
+vault_get_ssh_key() {
+    local key_path="$1"
+    local hostname="$2"
+    
+    if [[ -z "$key_path" || -z "$hostname" ]]; then
+        echo "Error: Key path and hostname required" >&2
+        return 1
+    fi
+    
+    # Ensure configuration is loaded
+    vault_config_load
+    
+    if [[ -z "$VAULT_ADDR" || -z "$VAULT_TOKEN" ]]; then
+        echo "Error: Vault not configured. Run vault_config_init first." >&2
+        return 1
+    fi
+    
+    # Create temporary key directory
+    local temp_dir="${SSH_TEMP_KEY_DIR:-/tmp/ssh_vault_keys}"
+    mkdir -p "$temp_dir" 2>/dev/null
+    chmod 700 "$temp_dir" 2>/dev/null
+    
+    # Create unique temporary key file
+    local timestamp=$(date +%s)
+    local temp_key_file="$temp_dir/${hostname}_${timestamp}.key"
+    
+    # Retrieve private key from vault
+    local private_key error_msg
+    private_key=$(vault kv get -field=private_key "$key_path" 2>&1)
+    
+    if [[ $? -eq 0 && -n "$private_key" ]]; then
+        # Write key to temporary file with secure permissions
+        echo "$private_key" > "$temp_key_file"
+        chmod 600 "$temp_key_file"
+        
+        # Validate key format
+        if ssh-keygen -l -f "$temp_key_file" >/dev/null 2>&1; then
+            echo "$temp_key_file"
+            return 0
+        else
+            rm -f "$temp_key_file"
+            echo "Error: Invalid SSH key format" >&2
+            return 1
+        fi
+    else
+        echo "❌ Could not retrieve SSH key from vault path: $key_path" >&2
+        
+        if [[ "$error_msg" == *"permission denied"* ]]; then
+            echo "   🔑 Token lacks permissions for key path" >&2
+        elif [[ "$error_msg" == *"no secret exists"* ]]; then
+            echo "   📝 SSH key not found at path: $key_path" >&2
+        else
+            echo "   ⚠️  Vault error: $error_msg" >&2
+        fi
+        
+        return 1
+    fi
+}
+
+# Cleanup temporary SSH key files
+vault_cleanup_temp_keys() {
+    local temp_dir="${SSH_TEMP_KEY_DIR:-/tmp/ssh_vault_keys}"
+    local max_age="${1:-3600}"  # Default: 1 hour
+    
+    if [[ -d "$temp_dir" ]]; then
+        # Remove files older than max_age seconds
+        find "$temp_dir" -name "*.key" -type f -mmin "+$((max_age/60))" -delete 2>/dev/null
+        
+        # Remove empty directory if no keys remain
+        if [[ -z "$(ls -A "$temp_dir" 2>/dev/null)" ]]; then
+            rmdir "$temp_dir" 2>/dev/null
+        fi
+    fi
+}
+
+# Main SSH function with dual authentication support (password and SSH key)
 vault_ssh() {
     local target="$1"
     local custom_secret_path="$2"
@@ -345,16 +487,16 @@ vault_ssh() {
         hostname="$target"
     fi
     
-    # Determine secret path
+    # Determine secret path - now using hosts/ structure
     local secret_path
     if [[ -n "$custom_secret_path" ]]; then
         secret_path="$custom_secret_path"
     else
         vault_config_load
-        secret_path="${VAULT_MOUNT_PATH:-secret}/${VAULT_SECRET_PATH:-ssh}/$hostname"
+        secret_path="${VAULT_MOUNT_PATH:-ssh-passwords}/hosts/$hostname"
     fi
     
-    # Check token validity before attempting to retrieve password
+    # Check token validity
     if ! vault token lookup >/dev/null 2>&1; then
         echo "❌ Vault token is invalid or expired" >&2
         echo "   💡 Run 'vault auth' to authenticate or 'vault_config_init' to reconfigure" >&2
@@ -363,29 +505,108 @@ vault_ssh() {
         return $?
     fi
     
-    echo "🔍 Retrieving password from vault: $secret_path"
+    echo "🔍 Retrieving authentication details from vault: $secret_path"
     
-    # Get password from vault
-    local password
-    password=$(vault_get_password "$secret_path")
+    # Get secret with auth type detection
+    local secret_json auth_type username password key_ref
+    secret_json=$(vault_get_secret "$secret_path")
     
-    if [[ $? -eq 0 && -n "$password" ]]; then
-        echo "🚀 Connecting to $target..."
+    if [[ $? -ne 0 || -z "$secret_json" ]]; then
+        echo "❌ Failed to retrieve authentication details from vault. Falling back to standard SSH..."
+        ssh "$target"
+        return $?
+    fi
+    
+    # Parse authentication details
+    auth_type=$(echo "$secret_json" | jq -r '.auth_type // "password"' 2>/dev/null)
+    username=$(echo "$secret_json" | jq -r '.username // "root"' 2>/dev/null)
+    password=$(echo "$secret_json" | jq -r '.password // empty' 2>/dev/null)
+    key_ref=$(echo "$secret_json" | jq -r '.key_ref // empty' 2>/dev/null)
+    
+    # Determine SSH target with username
+    local ssh_target="$target"
+    if [[ "$target" != *"@"* && -n "$username" ]]; then
+        ssh_target="${username}@${hostname}"
+    fi
+    
+    echo "🔐 Available authentication methods: $([ -n "$key_ref" ] && echo "SSH key" || echo "")$([ -n "$key_ref" ] && [ -n "$password" ] && echo ", ")$([ -n "$password" ] && echo "password")"
+    
+    # Priority: SSH Key first, then password fallback
+    # Try SSH key authentication first if available
+    if [[ -n "$key_ref" ]]; then
+        echo "🔑 Attempting SSH key authentication: $key_ref"
         
-        # Use sshpass to provide password to SSH
+        # Resolve key reference to full path
+        local key_path="${VAULT_MOUNT_PATH:-ssh-passwords}/keys/$key_ref"
+        
+        # Get SSH key and create temporary file
+        local temp_key_file
+        temp_key_file=$(vault_get_ssh_key "$key_path" "$hostname")
+        
+        if [[ $? -eq 0 && -n "$temp_key_file" ]]; then
+            echo "🚀 Connecting to $ssh_target with SSH key authentication..."
+            
+            # Setup cleanup trap
+            trap "rm -f '$temp_key_file'; vault_cleanup_temp_keys" EXIT INT TERM
+            
+            # Try SSH key with timeout
+            if ssh -i "$temp_key_file" -o PasswordAuthentication=no -o ConnectTimeout=10 "$ssh_target"; then
+                # Success with SSH key
+                rm -f "$temp_key_file"
+                vault_cleanup_temp_keys
+                return 0
+            else
+                echo "⚠️  SSH key authentication failed"
+                rm -f "$temp_key_file"
+                vault_cleanup_temp_keys
+                
+                # Continue to password fallback if available
+                if [[ -n "$password" ]]; then
+                    echo "🔄 Falling back to password authentication..."
+                else
+                    echo "❌ No password available for fallback. Using standard SSH..."
+                    ssh "$ssh_target"
+                    return $?
+                fi
+            fi
+        else
+            echo "❌ Failed to retrieve SSH key from vault"
+            
+            # Continue to password fallback if available
+            if [[ -n "$password" ]]; then
+                echo "🔄 Falling back to password authentication..."
+            else
+                echo "❌ No password available for fallback. Using standard SSH..."
+                ssh "$ssh_target"
+                return $?
+            fi
+        fi
+    fi
+    
+    # Password authentication (either primary choice or fallback)
+    if [[ -n "$password" ]]; then
+        if [[ -n "$key_ref" ]]; then
+            echo "🔐 Using password authentication as fallback..."
+        else
+            echo "🔐 Using password authentication (no SSH key configured)..."
+        fi
+        
+        echo "🚀 Connecting to $ssh_target with password authentication..."
+        
         if command -v sshpass >/dev/null 2>&1; then
-            sshpass -p "$password" ssh "$target"
+            sshpass -p "$password" ssh "$ssh_target"
         else
             echo "⚠️  sshpass not found. Install sshpass for password authentication."
             echo "🔄 Falling back to standard SSH..."
-            ssh "$target"
+            ssh "$ssh_target"
         fi
         
         # Clear password from memory
         unset password
     else
-        echo "❌ Failed to retrieve password from vault. Falling back to standard SSH..."
-        ssh "$target"
+        # No authentication methods available
+        echo "❌ No authentication methods available (no SSH key or password). Using standard SSH..."
+        ssh "$ssh_target"
     fi
 }
 
